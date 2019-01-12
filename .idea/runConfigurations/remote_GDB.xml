@@ -1,0 +1,5 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="remote GDB" type="CLion_Remote" debugger="/usr/local/bin/arm-none-eabi-gdb" remoteCommand=" | openocd -d4 -f $PROJECT_DIR$/openocd.cfg -c &quot;gdb_port pipe&quot; " symbolFile="$PROJECT_DIR$/target/thumbv7m-none-eabi/debug/pill-rust" sysroot="">
+    <method v="2" />
+  </configuration>
+</component>
