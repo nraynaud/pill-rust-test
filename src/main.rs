@@ -6,30 +6,45 @@
 
 extern crate panic_halt;
 
-use cortex_m::asm;
-use cortex_m_rt::entry;
+use rtfm::{app, Duration, Instant, U32Ext};
 use stm32f103xx_hal::{
-    device,
+    gpio::gpioc::PC13,
+    gpio::Output,
+    gpio::PushPull,
     prelude::*,
+    time::Hertz,
 };
 
-#[entry]
-fn main() -> ! {
-    let _cp = cortex_m::Peripherals::take().unwrap();
-    let dp = device::Peripherals::take().unwrap();
-    let mut flash = dp.FLASH.constrain();
-    let mut rcc = dp.RCC.constrain();
-    let mut afio = dp.AFIO.constrain(&mut rcc.apb2);
-    let clocks = rcc.cfgr.freeze(&mut flash.acr);
-    let mut gpioc = dp.GPIOC.split(&mut rcc.apb2);
-    let mut gpioa = dp.GPIOA.split(&mut rcc.apb2);
-    gpioa.pa8.into_alternate_open_drain(&mut gpioa.crh);
-    // prevent use
-    let _led = gpioc.pc13.into_floating_input(&mut gpioc.crh);
-    let mut pwm = dp.TIM2.pwm(gpioa.pa0.into_alternate_push_pull(&mut gpioa.crl), &mut afio.mapr, 2.hz(), clocks, &mut rcc.apb1);
-    pwm.enable();
-    pwm.set_duty(pwm.get_max_duty() / 2);
-    loop {
-        asm::wfi();
-    }
+fn hertz_to_cycles(sysclock: Hertz, hertz: Hertz) -> Duration {
+    return (sysclock.0 / hertz.0).cycles()
 }
+
+#[app(device = stm32f103xx)]
+const APP: () = {
+    static mut LED_GLOBAL: PC13<Output<PushPull>> = ();
+    static mut PERIOD: Duration = ();
+
+    #[init(schedule = [foo])]
+    unsafe fn init() {
+        let mut rcc = device.RCC.constrain();
+        let mut gpioc = device.GPIOC.split(&mut rcc.apb2);
+        let mut flash = device.FLASH.constrain();
+
+        let clocks = rcc.cfgr.freeze(&mut flash.acr);
+        let sysclock = clocks.sysclk();
+        let period = hertz_to_cycles(sysclock, 2.hz());
+        schedule.foo(Instant::now() + period).unwrap();
+        PERIOD = period;
+        LED_GLOBAL = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
+    }
+
+    #[task(schedule = [foo], resources = [LED_GLOBAL, PERIOD])]
+    fn foo() {
+        resources.LED_GLOBAL.toggle();
+        schedule.foo(scheduled + *resources.PERIOD).unwrap();
+    }
+
+    extern "C" {
+        fn USART1();
+    }
+};
