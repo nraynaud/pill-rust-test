@@ -16,7 +16,7 @@ use stm32f103xx_hal::{
 };
 
 fn hertz_to_cycles(sysclock: Hertz, hertz: Hertz) -> Duration {
-    return (sysclock.0 / hertz.0).cycles();
+    (sysclock.0 / hertz.0).cycles()
 }
 
 #[app(device = stm32f103xx)]
