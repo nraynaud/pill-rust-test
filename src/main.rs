@@ -6,7 +6,7 @@
 //MCU: STM32F103C8T699
 extern crate panic_halt;
 
-use rtfm::{app, Duration, Instant, U32Ext};
+use rtfm::{app, Instant};
 use stm32f103xx_hal::{
     gpio::gpioc::PC13,
     gpio::Output,
@@ -15,14 +15,14 @@ use stm32f103xx_hal::{
     time::Hertz,
 };
 
-fn hertz_to_cycles(sysclock: Hertz, hertz: Hertz) -> Duration {
-    (sysclock.0 / hertz.0).cycles()
+fn hertz_to_cycles(sysclock: Hertz, hertz: Hertz) -> u32 {
+    sysclock.0 / hertz.0
 }
 
 #[app(device = stm32f103xx)]
 const APP: () = {
     static mut LED_GLOBAL: PC13<Output<PushPull>> = ();
-    static mut PERIOD: Duration = ();
+    static mut PERIOD: u32 = ();
 
     #[init(schedule = [toggle])]
     unsafe fn init() {
@@ -31,8 +31,8 @@ const APP: () = {
         let mut flash = device.FLASH.constrain();
         let clocks = rcc.cfgr.freeze(&mut flash.acr);
         let sysclock = clocks.sysclk();
-        let period = hertz_to_cycles(sysclock, 10.hz());
-        schedule.toggle(Instant::now() + period).unwrap();
+        let period = hertz_to_cycles(sysclock, 50.hz());
+        schedule.toggle(Instant::now() + period.cycles()).unwrap();
         PERIOD = period;
         LED_GLOBAL = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
     }
@@ -40,7 +40,8 @@ const APP: () = {
     #[task(schedule = [toggle], resources = [LED_GLOBAL, PERIOD])]
     fn toggle() {
         resources.LED_GLOBAL.toggle();
-        schedule.toggle(scheduled + *resources.PERIOD).unwrap();
+        *resources.PERIOD = (*resources.PERIOD as f32 * 1.1) as u32;
+        schedule.toggle(scheduled + resources.PERIOD.cycles()).unwrap();
     }
 
     extern "C" {
