@@ -1,6 +1,4 @@
 # `pill rust test`
 
-> Just a personal learning project.
-
-This project is developed and maintained by the [Cortex-M team][team].
+> A personal project to learn embedded rust.
 
