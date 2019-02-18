@@ -1,4 +1,4 @@
-# Blue Pill rust test
+# Blue Pill Balancing Robot
 
 > A personal project to learn embedded rust on a STM32F103.
 

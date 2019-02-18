@@ -1,5 +1,7 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="remote GDB" type="CLion_Remote" debugger="/usr/local/bin/arm-none-eabi-gdb" remoteCommand=" | openocd -d1 -f $PROJECT_DIR$/openocd.cfg -c &quot;gdb_port pipe&quot; " symbolFile="$PROJECT_DIR$/target/thumbv7m-none-eabi/debug/pill-rust" sysroot="">
-    <method v="2" />
+  <configuration default="false" name="remote GDB" type="CLion_Remote" debugger="/usr/local/bin/arm-none-eabi-gdb" remoteCommand=" | /usr/local/bin/openocd -d1 -f $PROJECT_DIR$/openocd.cfg -c &quot;gdb_port pipe&quot; " symbolFile="$PROJECT_DIR$/target/thumbv7m-none-eabi/debug/pill-rust" sysroot="">
+    <method v="2">
+      <option name="ToolBeforeRunTask" enabled="true" actionId="Tool_External Tools_build" />
+    </method>
   </configuration>
 </component>
