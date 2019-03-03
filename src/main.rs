@@ -43,9 +43,9 @@ use stm32f103xx_hal::{
         Alternate,
         Floating,
         gpioa,
-        gpioa::{PA4, PA6},
+        gpioa::PA6,
         gpiob,
-        gpiob::{PB10, PB11, PB13, PB14, PB15, PB6},
+        gpiob::{PB10, PB11, PB12, PB13, PB14, PB15, PB6},
         gpioc,
         gpioc::{PC13, PC14, PC15},
         Input,
@@ -63,10 +63,10 @@ use stm32f103xx_hal::{
 };
 
 // PINOUT
+type SpiSs = PB12<Output<PushPull>>;
 type SpiClock = PB13<Alternate<PushPull>>;
 type SpiMiso = PB14<Input<Floating>>;
 type SpiMosi = PB15<Alternate<PushPull>>;
-type SpiSs = PA4<Output<PushPull>>;
 type MpuInterrupt = PC15<Input<PullDown>>;
 type UartTx = PB10<Alternate<PushPull>>;
 type UartRx = PB11<Input<Floating>>;
@@ -161,14 +161,14 @@ const APP: () = {
                             mpu9250::MODE, 500.khz(), clocks, &mut rcc.apb1);
         let mut spi = DmaSpi::new(spi, dma_channels.4, dma_channels.5);
         // stabilize SPI device
-        asm::delay(seconds_to_cycles(sysclock, 1.0));
-        let nss = gpioa.pa4.into_push_pull_output(&mut gpioa.crl);
+        asm::delay(seconds_to_cycles(sysclock, 0.1));
+        let nss = gpiob.pb12.into_push_pull_output(&mut gpiob.crh);
         let mut delay = NopDelay { sysfreq: sysclock.0 };
         let mut config = MpuConfig::marg();
         config
-            .accel_data_rate(AccelDataRate::DlpfConf(Dlpf::_2))
-            .gyro_temp_data_rate(GyroTempDataRate::DlpfConf(Dlpf::_1))
-            .sample_rate_divisor(0);
+            .gyro_temp_data_rate(GyroTempDataRate::DlpfConf(Dlpf::_0))
+            .accel_data_rate(AccelDataRate::DlpfConf(Dlpf::_0))
+            .sample_rate_divisor(2);
         let result = Mpu9250::marg(&mut spi, nss, &mut delay, &mut config);
         let mpu9250 = match result {
             Err(e) => {
@@ -190,7 +190,6 @@ const APP: () = {
         let exti = device.EXTI;
         exti.imr.write(|w| w.mr15().set_bit());
         exti.rtsr.write(|w| w.tr15().set_bit());
-
         spi.change_baud_rate(18_000_000.hz());
 
         LED1 = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
@@ -204,11 +203,12 @@ const APP: () = {
         EXTI = exti;
     }
 
+    #[allow(non_snake_case)]
     #[interrupt(resources = [LED1, EXTI, MPU, FILTER, SPI, ], priority = 2)]
     fn EXTI15_10() {
         resources.EXTI.pr.modify(|_, w| w.pr15().set_bit());
         resources.LED1.set_high();
-        let a: MargMeasurements = resources.MPU.all(&mut resources.SPI).unwrap();
+        let a: MargMeasurements = resources.MPU.all(resources.SPI).unwrap();
         let w = imu::V {
             x: a.gyro.x,
             y: a.gyro.y,
@@ -219,10 +219,12 @@ const APP: () = {
             y: a.accel.y,
             z: a.accel.z,
         };
-        *resources.FILTER = imu::filter_update(w, a_val, *resources.FILTER, 1.0 / 10.0);
+        *resources.FILTER = imu::filter_update(w, a_val, *resources.FILTER,
+                                               1.0 / 4_000.0);
         resources.LED1.set_low();
     }
 
+    #[allow(non_snake_case)]
     #[interrupt(resources = [LED2, TX_EITHER, FILTER], priority = 1)]
     fn USART3() {
         resources.LED2.set_high();
@@ -301,7 +303,8 @@ fn start_uart3_and_configure_hc_08<PINS: Pins<USART3Type>>(usart: USART3Type, pi
         pins = p;
         buf_rx = buf;
     }
-    unreachable!();
+    // couldn't find HC 08, configure at 115200BPS and move on
+    (Serial::usart3(usart, pins, mapr, 115_200.bps(), clocks, bus), c_tx, c_rx)
 }
 
 #[derive(Debug, Copy, Clone)]
