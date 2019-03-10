@@ -29,9 +29,11 @@ use cast::u32;
 use cortex_m::{asm, singleton};
 use either::Either;
 use embedded_hal::blocking::delay::DelayMs;
+use embedded_hal::digital::OutputPin;
 use heapless::{consts::*, String, Vec};
 use imu;
-use mpu9250::{AccelDataRate, Dlpf, GyroTempDataRate, Marg, MargMeasurements, Mpu9250, MpuConfig};
+use mpu9250::{AccelDataRate, Dlpf, GyroTempDataRate, InterruptConfig, InterruptEnable, Marg,
+              MargMeasurements, Mpu9250, MpuConfig};
 use nb::block;
 use rtfm::app;
 use stm32f103xx::{EXTI, RCC, USART3 as USART3Type};
@@ -70,7 +72,7 @@ type SpiMosi = PB15<Alternate<PushPull>>;
 type MpuInterrupt = PC15<Input<PullDown>>;
 type UartTx = PB10<Alternate<PushPull>>;
 type UartRx = PB11<Input<Floating>>;
-type Led1 = PC13<Output<PushPull>>;
+type Led1 = PC13<Output<OpenDrain>>;
 type Led2 = PC14<Output<PushPull>>;
 type PwmLeft = PA6<Alternate<PushPull>>;
 type PwmRight = PB6<Alternate<PushPull>>;
@@ -78,8 +80,8 @@ type PwmRight = PB6<Alternate<PushPull>>;
 
 type SpiMapping = (SpiClock, SpiMiso, SpiMosi);
 type SpiType = DmaSpi<SpiMapping>;
-//type SpiType = Spi<SPI2, SpiMapping>;
-type MpuType = Mpu9250<SpiType, SpiSs, Marg>;
+//type SpiType = Spi<stm32f103xx::SPI2, SpiMapping>;
+type MpuType = Mpu9250<mpu9250::SpiDevice<SpiType, ImuSelectPin<SpiSs>>, Marg>;
 
 type PwmMappingLeft = Pwm3Mapping0<PushPull, OpenDrain, OpenDrain, PushPull>;
 type PwmTypeLeft = PWM3<PwmMappingLeft>;
@@ -105,7 +107,6 @@ const APP: () = {
     static mut MPU: MpuType = ();
     static mut TX_EITHER: Option<Either<TxTuple, TxTransfer>> = ();
     static mut FILTER: imu::Q = ();
-    static mut SPI: SpiType = ();
     static mut EXTI: EXTI = ();
 
     #[init]
@@ -158,19 +159,25 @@ const APP: () = {
         let mosi = gpiob.pb15.into_alternate_push_pull(&mut gpiob.crh);
         let spi_mapping: SpiMapping = (sck, miso, mosi);
         let spi = Spi::spi2(device.SPI2, spi_mapping,
-                            mpu9250::MODE, 500.khz(), clocks, &mut rcc.apb1);
-        let mut spi = DmaSpi::new(spi, dma_channels.4, dma_channels.5);
+                            mpu9250::MODE, 200.khz(), clocks, &mut rcc.apb1);
+        let spi = DmaSpi::new(spi, dma_channels.4, dma_channels.5);
         // stabilize SPI device
         asm::delay(seconds_to_cycles(sysclock, 0.1));
         let nss = gpiob.pb12.into_push_pull_output(&mut gpiob.crh);
+        let nss = ImuSelectPin { pin: nss, delay: true };
         let mut delay = NopDelay { sysfreq: sysclock.0 };
         let mut config = MpuConfig::marg();
         config
             .gyro_temp_data_rate(GyroTempDataRate::DlpfConf(Dlpf::_0))
             .accel_data_rate(AccelDataRate::DlpfConf(Dlpf::_0))
             .sample_rate_divisor(2);
-        let result = Mpu9250::marg(&mut spi, nss, &mut delay, &mut config);
-        let mpu9250 = match result {
+
+        let mpu = Mpu9250::marg_with_reinit(spi, nss, &mut delay, &mut config, |mut spi, mut ncs| {
+            spi.change_baud_rate(18_000_000.hz());
+            ncs.delay = false;
+            Some((spi, ncs))
+        });
+        let mut mpu: MpuType = match mpu {
             Err(e) => {
                 let mut str_buff = String::<U200>::new();
                 write!(&mut str_buff, "error: {:?}\n", e).unwrap();
@@ -179,6 +186,8 @@ const APP: () = {
             }
             Ok(r) => r
         };
+        mpu.interrupt_config(InterruptConfig::INT_ANYRD_CLEAR).unwrap();
+        mpu.enable_interrupts(InterruptEnable::RAW_RDY_EN).unwrap();
         let filter: imu::Q = imu::Q {
             w: 1.0,
             x: 0.0,
@@ -190,25 +199,23 @@ const APP: () = {
         let exti = device.EXTI;
         exti.imr.write(|w| w.mr15().set_bit());
         exti.rtsr.write(|w| w.tr15().set_bit());
-        spi.change_baud_rate(18_000_000.hz());
 
-        LED1 = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
+        LED1 = gpioc.pc13.into_open_drain_output(&mut gpioc.crh);
         LED2 = gpioc.pc14.into_push_pull_output(&mut gpioc.crh);
         PWM_LEFT = pwm_left;
         PWM_RIGHT = pwm_right;
-        MPU = mpu9250;
+        MPU = mpu;
         TX_EITHER = Some(Either::Left((&mut TX_BUFFER, tx_channel, tx)));
         FILTER = filter;
-        SPI = spi;
         EXTI = exti;
     }
 
     #[allow(non_snake_case)]
-    #[interrupt(resources = [LED1, EXTI, MPU, FILTER, SPI, ], priority = 2)]
+    #[interrupt(resources = [LED1, EXTI, MPU, FILTER], priority = 2)]
     fn EXTI15_10() {
         resources.EXTI.pr.modify(|_, w| w.pr15().set_bit());
         resources.LED1.set_high();
-        let a: MargMeasurements = resources.MPU.all(resources.SPI).unwrap();
+        let a: MargMeasurements = resources.MPU.all().unwrap();
         let w = imu::V {
             x: a.gyro.x,
             y: a.gyro.y,
@@ -266,9 +273,9 @@ fn start_uart3_and_configure_hc_08<PINS: Pins<USART3Type>>(usart: USART3Type, pi
                                                            clocks: Clocks, mapr: &mut MAPR, bus: &mut APB1)
                                                            -> (Serial<USART3Type, PINS>, dma1::C2, dma1::C3) {
     let buf = singleton!(: [[u8; RX_H_SZ]; 2] = [[0; RX_H_SZ]; 2]).unwrap();
-    let baud_rates = [(b'4', 9_600.bps()), (b'5', 19_200.bps()),
-        (b'6', 38_400.bps()), (b'4', 57_600.bps()), (b'8', 115_200.bps())];
-    let target_baud = &baud_rates[4];
+    let baud_rates = [(b'8', 115_200.bps()), (b'4', 9_600.bps()), (b'5', 19_200.bps()),
+        (b'6', 38_400.bps()), (b'4', 57_600.bps())];
+    let target_baud = &baud_rates[0];
     let mut c_tx = tx_channel;
     let mut c_rx = rx_channel;
     let mut usart = usart;
@@ -305,6 +312,30 @@ fn start_uart3_and_configure_hc_08<PINS: Pins<USART3Type>>(usart: USART3Type, pi
     }
     // couldn't find HC 08, configure at 115200BPS and move on
     (Serial::usart3(usart, pins, mapr, 115_200.bps(), clocks, bus), c_tx, c_rx)
+}
+
+pub struct ImuSelectPin<PIN> {
+    pin: PIN,
+    delay: bool,
+}
+
+impl<PIN: OutputPin> OutputPin for ImuSelectPin<PIN> {
+    fn set_low(&mut self) {
+        if self.delay {
+            asm::delay(10);
+            self.pin.set_low();
+            asm::delay(5);
+        } else {
+            self.pin.set_low();
+        }
+    }
+
+    fn set_high(&mut self) {
+        if self.delay {
+            asm::delay(5);
+        }
+        self.pin.set_high();
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
